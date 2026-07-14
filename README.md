@@ -31,6 +31,13 @@ No Dock icon, no cloud, no AI. Everything stays on your Mac.
 - **Any folder, fast** — scan Downloads, Desktop, Documents, Movies, Pictures,
   Home, or any folder you pick; optional recursive scan streams results live with
   a running count (skips `Library` / `node_modules` noise).
+- **Unused apps** — *Scan Location ▸ Applications* lists your installed apps
+  (from `/Applications` and `~/Applications`, never Apple's `/System` apps)
+  grouped by **how long since you last opened them**, with version, size, and
+  bundle ID. Apps unused for 6+ months (or never opened) are flagged. Moving an
+  app to the Trash here removes the app bundle (recoverable); organizing and
+  bulk-trash are disabled for apps, and running apps warn before removal. Full
+  leftover cleanup is on the roadmap.
 - **Quick Look** — select a row and press **Space** (or right-click ▸ Quick Look)
   for an inline preview, without leaving the panel. Space/Esc closes it.
 - **Menu-bar badge** — optionally shows reclaimable space (e.g. `1.2 GB`) next to
@@ -136,11 +143,13 @@ Designed to be light and fully on-demand:
 Where From started as a "where did this file come from?" utility and is growing
 into a full local file-hygiene tool. Planned directions:
 
-**App uninstaller (with hard guardrails).** Uninstall an app *and* everything it
-left behind — the way CleanMyMac / AppCleaner do — by locating its scattered
-support files: `~/Library/Application Support`, `Caches`, `Preferences`,
-`Containers`, `Logs`, `Saved Application State`, `LaunchAgents`, etc., matched by
-bundle identifier. Guardrails are the whole point:
+**App uninstaller (with hard guardrails).** The **Applications** view already
+showcases installed apps by last-use and can move an app bundle to the Trash. The
+next step is a full uninstall that also removes everything an app left behind —
+the way CleanMyMac / AppCleaner do — by locating its scattered support files:
+`~/Library/Application Support`, `Caches`, `Preferences`, `Containers`, `Logs`,
+`Saved Application State`, `LaunchAgents`, etc., matched by bundle identifier.
+Guardrails are the whole point:
 
 - **Nothing is ever auto-deleted.** The app only ever acts on an explicit click,
   never on a timer or "in the background."

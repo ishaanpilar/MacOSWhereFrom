@@ -45,11 +45,12 @@ struct ContentView: View {
     // MARK: Sidebar
 
     private var sectionTitle: String {
+        if model.appsMode { return "Last used" }
         switch model.groupMode {
-        case .source: "Sources"
-        case .type: "File types"
-        case .date: "When added"
-        case .cleanup: "Reclaimable"
+        case .source: return "Sources"
+        case .type: return "File types"
+        case .date: return "When added"
+        case .cleanup: return "Reclaimable"
         }
     }
 
@@ -72,6 +73,10 @@ struct ContentView: View {
                                     model.open(folder: preset.url)
                                 } label: { Label(preset.name, systemImage: preset.symbol) }
                             }
+                            Divider()
+                            Button {
+                                model.scanApplications()
+                            } label: { Label("Applications (by last use)", systemImage: "app.dashed") }
                         }
                         Button("Choose Folder…") { model.chooseFolder() }
                         Toggle("Scan subfolders", isOn: $model.recursive)
@@ -86,18 +91,27 @@ struct ContentView: View {
                 }
                 Button { model.chooseFolder() } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "folder")
-                        Text(model.folder.lastPathComponent).lineLimit(1).truncationMode(.middle)
-                        if model.recursive { Image(systemName: "arrow.turn.down.right").font(.caption2) }
+                        Image(systemName: model.appsMode ? "app.dashed" : "folder")
+                        Text(model.appsMode ? "Applications" : model.folder.lastPathComponent)
+                            .lineLimit(1).truncationMode(.middle)
+                        if !model.appsMode && model.recursive {
+                            Image(systemName: "arrow.turn.down.right").font(.caption2)
+                        }
                     }
                     .font(.caption).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain).help(model.folder.path)
+                .buttonStyle(.plain).help(model.appsMode ? "Installed applications" : model.folder.path)
 
-                Picker("", selection: $model.groupMode) {
-                    ForEach(GroupMode.allCases) { mode in Text(mode.rawValue).tag(mode) }
+                if model.appsMode {
+                    Label("Grouped by last use", systemImage: "clock.arrow.circlepath")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Picker("", selection: $model.groupMode) {
+                        ForEach(GroupMode.allCases) { mode in Text(mode.rawValue).tag(mode) }
+                    }
+                    .pickerStyle(.segmented).labelsHidden()
                 }
-                .pickerStyle(.segmented).labelsHidden()
             }
             .padding(10)
             Divider()
@@ -213,31 +227,34 @@ struct ContentView: View {
             }
             .width(min: 150, ideal: 230)
 
-            TableColumn("Source", value: \.domainSortKey) { item in
-                Group {
-                    if let d = item.sourceDomain {
-                        Text(d).foregroundStyle(.primary)
-                    } else {
-                        Text("unknown").foregroundStyle(.tertiary).italic()
-                    }
+            // Source (files) or Version (apps) — swapped, not sortable.
+            TableColumn(model.appsMode ? "Version" : "Source") { item in
+                if model.appsMode {
+                    Text(item.version ?? "—").foregroundStyle(.secondary).monospacedDigit()
+                } else if let d = item.sourceDomain {
+                    Text(d).foregroundStyle(.primary).help(item.originURL ?? "")
+                } else {
+                    Text("unknown").foregroundStyle(.tertiary).italic()
                 }
-                .help(item.originURL ?? "No recorded origin")
             }
-            .width(min: 100, ideal: 140)
+            .width(min: 90, ideal: 130)
 
-            TableColumn("Kind", value: \.category.rawValue) { item in
-                Text(item.category.rawValue).foregroundStyle(.secondary)
+            TableColumn(model.appsMode ? "Bundle ID" : "Kind", value: \.category.rawValue) { item in
+                Text(model.appsMode ? (item.bundleID ?? "—") : item.category.rawValue)
+                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
-            .width(min: 70, ideal: 90)
+            .width(min: 70, ideal: model.appsMode ? 150 : 90)
 
-            TableColumn("Added", value: \.addedSortKey) { item in
+            TableColumn(model.appsMode ? "Installed" : "Added", value: \.addedSortKey) { item in
                 Text(fmtAge(item.dateAdded)).foregroundStyle(.secondary).monospacedDigit()
             }
             .width(min: 66, ideal: 84)
 
             TableColumn("Last opened", value: \.openedSortKey) { item in
+                let unused = model.appsMode && UsageBucket.of(item.lastOpened).isUnused
                 Text(item.neverOpened ? "never" : fmtAge(item.lastOpened))
-                    .foregroundStyle(item.neverOpened ? .orange : .secondary).monospacedDigit()
+                    .foregroundStyle(item.neverOpened || unused ? .orange : .secondary)
+                    .monospacedDigit()
             }
             .width(min: 78, ideal: 96)
 
@@ -302,8 +319,8 @@ struct ContentView: View {
             }
             .menuStyle(.button)
             .fixedSize()
-            .disabled(organizeTargets.isEmpty)
-            .help("Move files into subfolders")
+            .disabled(organizeTargets.isEmpty || model.appsMode)
+            .help(model.appsMode ? "Not available for applications" : "Move files into subfolders")
             .confirmationDialog(organizePrompt, isPresented: $confirmOrganize, titleVisibility: .visible) {
                 Button("Move into subfolders") { model.organize(organizeTargets, scheme: organizeScheme) }
                 Button("Cancel", role: .cancel) {}
@@ -317,7 +334,8 @@ struct ContentView: View {
             Button(role: .destructive) {
                 confirmTrashShown = true
             } label: { Label("Trash All Shown", systemImage: "trash.fill") }
-                .disabled(model.filteredItems.isEmpty)
+                .disabled(model.filteredItems.isEmpty || model.appsMode)
+                .help(model.appsMode ? "Disabled for apps — select apps individually" : "")
                 .confirmationDialog(trashShownPrompt, isPresented: $confirmTrashShown, titleVisibility: .visible) {
                     Button("Move \(model.filteredItems.count) to Trash", role: .destructive) {
                         model.moveToTrash(model.filteredItems.map(\.url))
@@ -346,6 +364,14 @@ struct ContentView: View {
     private var trashSelectedPrompt: String {
         let sel = model.selectedItems()
         let size = sel.reduce(0) { $0 + $1.size }
+        if model.appsMode {
+            let running = sel.filter { model.isRunning($0) }.map(\.name)
+            var msg = "Move \(sel.count) app(s) (\(fmtSize(size))) to the Trash? This removes the app bundle only — leftover support files stay (full uninstall is on the roadmap). Recoverable from the Trash."
+            if !running.isEmpty {
+                msg += "\n\n⚠️ Currently running: \(running.joined(separator: ", ")). Quit before removing."
+            }
+            return msg
+        }
         return "Move \(sel.count) selected file(s) (\(fmtSize(size))) to the Trash?"
     }
 

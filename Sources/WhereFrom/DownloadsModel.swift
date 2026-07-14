@@ -15,6 +15,9 @@ struct DownloadItem: Identifiable, Hashable {
     let isDirectory: Bool
     let ext: String
     let category: FileCategory
+    var version: String? = nil     // apps only
+    var bundleID: String? = nil    // apps only
+    var isApp: Bool = false
 
     var originURL: String? { sourceURLs.first }
     var neverOpened: Bool { lastOpened == nil }
@@ -102,6 +105,10 @@ final class DownloadsModel: ObservableObject {
     // Options
     @Published var recursive = false { didSet { Defaults.recursive = recursive } }
 
+    /// When true, the panel is showing installed applications (by last use)
+    /// rather than the contents of a folder.
+    @Published var appsMode = false
+
     // Cleanup state
     @Published var duplicateIDs: Set<DownloadItem.ID> = [] { didSet { recomputeReclaimable() } }
 
@@ -141,6 +148,7 @@ final class DownloadsModel: ObservableObject {
     /// installers + big/never-opened, plus duplicates once computed). Runs only
     /// when items or duplicates change — never on a timer.
     func recomputeReclaimable() {
+        guard !appsMode else { reclaimableBytes = 0; return }
         reclaimableBytes = items.reduce(0) { $0 + (cleanupCategory(for: $1) != nil ? $1.size : 0) }
     }
 
@@ -184,8 +192,18 @@ final class DownloadsModel: ObservableObject {
     }
 
     func open(folder url: URL) {
+        appsMode = false
         folder = url
         Defaults.folderPath = url.path
+        scan()
+    }
+
+    /// Scan installed applications (in /Applications, /Applications/Utilities and
+    /// ~/Applications) and show them grouped by how long since last used. System
+    /// apps under /System are intentionally excluded.
+    func scanApplications() {
+        appsMode = true
+        selectedBucketKey = nil
         scan()
     }
 
@@ -212,9 +230,11 @@ final class DownloadsModel: ObservableObject {
         duplicateIDs = []
         items = []
 
+        let apps = appsMode
         scanTask = Task { [weak self] in
             var batch: [DownloadItem] = []
-            for await item in Self.itemStream(dir, recursive: deep) {
+            let stream = apps ? Self.appStream() : Self.itemStream(dir, recursive: deep)
+            for await item in stream {
                 if Task.isCancelled { return }
                 batch.append(item)
                 if batch.count >= 300 {
@@ -302,9 +322,85 @@ final class DownloadsModel: ObservableObject {
         )
     }
 
+    // MARK: - Applications scan
+
+    /// User-app locations only — never /System/Applications, so Apple's built-in
+    /// apps can't be listed or trashed.
+    nonisolated static var appSearchDirs: [URL] {
+        var dirs = [URL(fileURLWithPath: "/Applications"),
+                    URL(fileURLWithPath: "/Applications/Utilities")]
+        dirs.append(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications"))
+        return dirs
+    }
+
+    nonisolated static func appStream() -> AsyncStream<DownloadItem> {
+        AsyncStream { continuation in
+            let work = Task.detached(priority: .userInitiated) {
+                let fm = FileManager.default
+                var seen = Set<String>()
+                for dir in appSearchDirs {
+                    guard let entries = try? fm.contentsOfDirectory(
+                        at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { continue }
+                    for url in entries where url.pathExtension == "app" {
+                        if Task.isCancelled { continuation.finish(); return }
+                        if !seen.insert(url.standardizedFileURL.path).inserted { continue }
+                        if let item = makeAppItem(url) { continuation.yield(item) }
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in work.cancel() }
+        }
+    }
+
+    nonisolated static func makeAppItem(_ url: URL) -> DownloadItem? {
+        guard url.pathExtension == "app" else { return nil }
+        let rv = try? url.resourceValues(forKeys: [.addedToDirectoryDateKey, .creationDateKey])
+        let bundle = Bundle(url: url)
+        let version = bundle?.infoDictionary?["CFBundleShortVersionString"] as? String
+        return DownloadItem(
+            id: url,
+            name: url.deletingPathExtension().lastPathComponent,
+            sourceURLs: Provenance.whereFroms(atPath: url.path),
+            sourceDomain: nil,
+            dateAdded: rv?.addedToDirectoryDate ?? rv?.creationDate,
+            lastOpened: Provenance.lastUsedDate(atPath: url.path),
+            size: directorySize(url),
+            isDirectory: true,
+            ext: "app",
+            category: .applications,
+            version: version,
+            bundleID: bundle?.bundleIdentifier,
+            isApp: true
+        )
+    }
+
+    /// Recursive on-disk size of a bundle/folder. Runs on the background scan
+    /// task, so a large app doesn't block the UI.
+    nonisolated static func directorySize(_ url: URL) -> Int64 {
+        var total: Int64 = 0
+        if let e = FileManager.default.enumerator(at: url,
+                                                  includingPropertiesForKeys: [.totalFileAllocatedSizeKey],
+                                                  options: []) {
+            for case let f as URL in e {
+                if let s = try? f.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize {
+                    total += Int64(s)
+                }
+            }
+        }
+        return total
+    }
+
+    /// Is this app currently running? (a guardrail hint before trashing)
+    func isRunning(_ item: DownloadItem) -> Bool {
+        guard let id = item.bundleID else { return false }
+        return NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == id }
+    }
+
     // MARK: - Grouping
 
     func bucketKey(for item: DownloadItem) -> String {
+        if appsMode { return UsageBucket.of(item.lastOpened).rawValue }
         switch groupMode {
         case .source:  return item.sourceDomain ?? ""
         case .type:    return item.category.rawValue
@@ -314,6 +410,7 @@ final class DownloadsModel: ObservableObject {
     }
 
     private func bucketLabel(_ key: String) -> String {
+        if appsMode { return key }
         switch groupMode {
         case .source:  return key.isEmpty ? "Unknown source" : key
         case .cleanup: return key.isEmpty ? "Other" : key
@@ -322,6 +419,7 @@ final class DownloadsModel: ObservableObject {
     }
 
     private func bucketSymbol(_ key: String) -> String {
+        if appsMode { return UsageBucket(rawValue: key)?.symbol ?? "app.dashed" }
         switch groupMode {
         case .source:  return key.isEmpty ? "questionmark.circle" : "globe"
         case .type:    return FileCategory(rawValue: key)?.symbol ?? "doc"
@@ -331,6 +429,7 @@ final class DownloadsModel: ObservableObject {
     }
 
     private func sortIndex(_ key: String) -> Int {
+        if appsMode { return UsageBucket(rawValue: key)?.order ?? 99 }
         switch groupMode {
         case .date:    return DateBucket(rawValue: key)?.order ?? 99
         case .cleanup: return CleanupCategory(rawValue: key)?.order ?? 99
@@ -340,7 +439,8 @@ final class DownloadsModel: ObservableObject {
 
     /// Items eligible for grouping (cleanup mode only shows flagged items).
     private var groupableItems: [DownloadItem] {
-        groupMode == .cleanup ? items.filter { cleanupCategory(for: $0) != nil } : items
+        if appsMode { return items }
+        return groupMode == .cleanup ? items.filter { cleanupCategory(for: $0) != nil } : items
     }
 
     var buckets: [Bucket] {
@@ -352,7 +452,7 @@ final class DownloadsModel: ObservableObject {
             e.count += 1; e.size += item.size
             grouped[key] = e
         }
-        let useOrder = (groupMode == .date || groupMode == .cleanup)
+        let useOrder = (appsMode || groupMode == .date || groupMode == .cleanup)
         return grouped
             .map { Bucket(key: $0.key, label: bucketLabel($0.key), symbol: bucketSymbol($0.key),
                           count: $0.value.count, size: $0.value.size) }
@@ -376,7 +476,7 @@ final class DownloadsModel: ObservableObject {
             if onlyNeverOpened && !item.neverOpened { return false }
             if olderThanDays > 0, (item.ageInDays ?? -1) < olderThanDays { return false }
             if !searchText.isEmpty {
-                let hay = "\(item.name) \(item.sourceDomain ?? "") \(item.originURL ?? "")"
+                let hay = "\(item.name) \(item.sourceDomain ?? "") \(item.originURL ?? "") \(item.bundleID ?? "")"
                 if hay.range(of: searchText, options: .caseInsensitive) == nil { return false }
             }
             return true

@@ -86,7 +86,7 @@ After that it launches normally.
 ### Direct download (DMG)
 
 Grab `WhereFrom-<version>.dmg` from the
-[Releases](https://github.com/ishaanpilar/WhereFrom/releases) page, open it, and
+[Releases](https://github.com/ishaanpilar/MacOSWhereFrom/releases) page, open it, and
 drag **WhereFrom** onto **Applications**. Same first-launch step as above.
 
 ## Launch & first run
@@ -101,8 +101,8 @@ To quit, open the panel and choose **⋯ ▸ Quit Where From**.
 ## Build from source
 
 ```bash
-git clone https://github.com/ishaanpilar/WhereFrom.git
-cd WhereFrom
+git clone https://github.com/ishaanpilar/MacOSWhereFrom.git
+cd MacOSWhereFrom
 ./make-app.sh        # builds WhereFrom.app (release, ad-hoc signed)
 open WhereFrom.app
 # or: swift run       (dev run; access prompt is attributed to your terminal)

@@ -1,0 +1,6 @@
+.build/
+WhereFrom.app/
+dist/
+*.dmg
+*.xcodeproj
+.DS_Store
